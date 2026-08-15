@@ -186,7 +186,7 @@
   .cat-badge{ display:inline-block; font-size:12px; font-weight:700; padding:2px 10px; border-radius:10px; color:#fff5da; margin-bottom:6px; }
   .tier-line{ font-size:13px; color:#7a6a52; margin-bottom:10px; }
   label{ display:block; font-size:13px; font-weight:700; color:#7a6a52; margin:12px 0 4px; }
-  input[type=text], textarea, select{
+  input[type=text], input[type=email], input[type=password], input[type=number], input[type=date], input[type=file], textarea, select{
     width:100%; font-family:'Baloo 2',sans-serif; font-size:15px; padding:9px 10px;
     border:2px solid #e5d8ba; border-radius:8px; background:#fffef9; color:var(--ink);
   }
@@ -211,6 +211,13 @@
   .review-head .rec{ font-size:11.5px; padding:1px 8px; border-radius:8px; color:#fff5da; }
   .review-head .rec.yes{ background:var(--forest); }
   .review-head .rec.no{ background:var(--seal-red); }
+  .review-images{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .review-images img{ width:72px; height:72px; object-fit:cover; border-radius:6px; border:2px solid #e5d8ba; }
+  .reaction-row{ display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+  .reaction-btn{ border:1px solid #d8c9a3; background:#fffaf0; color:#7a5a3a; border-radius:14px; padding:3px 10px; cursor:pointer; font-family:'Baloo 2',sans-serif; font-weight:700; font-size:12px; }
+  .reaction-btn.active{ background:#3d2c1c; color:#fff5da; border-color:#3d2c1c; }
+  .reaction-names{ color:#8a7860; font-size:12px; line-height:1.45; margin-top:4px; }
+  .favorite-btn{ width:100%; text-align:center; margin-top:12px; }
   .empty-hint{ color:#8a7860; font-size:13px; font-style:italic; padding:8px 0; }
   .divider{ border:none; border-top:2px dashed #e5d8ba; margin:16px 0; }
   .loading-screen{ color:#7a6a52; text-align:center; padding:60px 16px; }
@@ -237,10 +244,13 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-const STORAGE_KEY = 'xifuhui-food-map';
+const SUPABASE_URL = 'https://kjkdbtkaetqlhnsnkehd.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtqa2RidGthZXRxbGhuc25rZWhkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY3NzYwMjQsImV4cCI6MjEwMjM1MjAyNH0.xwllmGVvOPM7lujfNz_e4lDLTZPtDEV2sI8tVG0IFyc';
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const ADMIN_NAME = '兜兜';
-const CATS = {
+let CATS = {
   zixuan:  { label:'自选菜',    icon:'🍱', wall:'#e2703a', wallDark:'#c85a28', roof:'#8c3a2b', accent:'#f4d27a' },
   noodle:  { label:'面/粉',     icon:'🍜', wall:'#7fae5a', wallDark:'#5f9a4a', roof:'#3c6b32', accent:'#fdf3d0' },
   gaijiao: { label:'盖浇饭',    icon:'🍚', wall:'#e6c169', wallDark:'#dab04a', roof:'#a5762e', accent:'#8c3a2b' },
@@ -257,30 +267,115 @@ let mapEl, legendEl;
 let newlyCreatedId = null;
 let moveModeId = null;
 let myName = null;
+let currentUser = null;
+let currentProfile = null;
+let favoriteIds = new Set();
 
-function getTier(count){
-  if(count>=10) return 4;
-  if(count>=5) return 3;
-  if(count>=2) return 2;
+function getTierFromReviews(reviews){
+  const recs = likeCount(reviews);
+  const avg = avgRating(reviews);
+  if(recs>=10 && avg>=4.3) return 4;
+  if(recs>=5 && avg>=4.0) return 3;
+  if(recs>=2 && avg>=3.5) return 2;
   return 1;
 }
 function likeCount(reviews){
   return (reviews||[]).filter(r=>r.recommend).length;
 }
+function avgRating(reviews){
+  const rated = (reviews||[]).filter(r=>typeof r.rating==='number');
+  if(!rated.length) return 0;
+  return rated.reduce((sum,r)=>sum+r.rating,0)/rated.length;
+}
+function ratingStars(rating){
+  const n = Math.round(Number(rating)||0);
+  return '★'.repeat(n) + '☆'.repeat(Math.max(0, 5-n));
+}
+function isAdmin(){
+  return currentProfile?.role === 'admin';
+}
 
 async function loadData(){
-  try{
-    const res = await window.storage.get(STORAGE_KEY, true);
-    if(res && res.value){
-      data = JSON.parse(res.value);
-      if(!data.places) data.places = [];
-      if(!data.reviews) data.reviews = {};
-    }
-  }catch(e){ /* no data saved yet */ }
+  await loadCategories();
+  await loadRestaurantsAndReviews();
+  if(currentUser) await loadFavorites();
 }
 async function saveData(){
-  try{ await window.storage.set(STORAGE_KEY, JSON.stringify(data), true); }
-  catch(e){ alert('保存失败，再试一次吧'); }
+  await loadData();
+}
+
+async function loadCategories(){
+  const { data: rows, error } = await db
+    .from('restaurant_categories')
+    .select('*')
+    .eq('is_active', true)
+    .order('sort_order', { ascending:true });
+  if(error){ throw error; }
+  if(rows?.length){
+    CATS = Object.fromEntries(rows.map(c=>[c.id, {
+      label:c.label,
+      icon:c.icon || '🍽️',
+      wall:c.wall_color || '#c49bdb',
+      wallDark:c.wall_dark_color || '#b587cf',
+      roof:c.roof_color || '#7a4d92',
+      accent:c.accent_color || '#fdeeff'
+    }]));
+  }
+  activeFilters = new Set(Object.keys(CATS));
+}
+
+async function loadRestaurantsAndReviews(){
+  const [{ data: restaurants, error: restaurantError }, { data: reviews, error: reviewError }] = await Promise.all([
+    db.from('restaurants')
+      .select('*, profiles:created_by(display_name, role)')
+      .eq('status', 'active')
+      .order('created_at', { ascending:true }),
+    db.from('reviews')
+      .select('*, profiles:user_id(display_name), review_images(*), review_reactions(*, profiles:user_id(display_name))')
+      .eq('status', 'active')
+      .order('created_at', { ascending:true })
+  ]);
+  if(restaurantError) throw restaurantError;
+  if(reviewError) throw reviewError;
+  data.places = (restaurants||[]).map(row=>({
+    id:row.id,
+    name:row.name,
+    category:row.category_id,
+    x:Number(row.x),
+    y:Number(row.y),
+    avgPrice:row.avg_price,
+    description:row.description,
+    createdBy:row.created_by,
+    addedBy:row.profiles?.display_name || '匿名吃货',
+    addedAt:row.created_at
+  }));
+  data.reviews = {};
+  (reviews||[]).forEach(row=>{
+    if(!data.reviews[row.restaurant_id]) data.reviews[row.restaurant_id] = [];
+    data.reviews[row.restaurant_id].push({
+      id:row.id,
+      restaurantId:row.restaurant_id,
+      userId:row.user_id,
+      reviewer:row.profiles?.display_name || '匿名吃货',
+      rating:Number(row.rating),
+      recommend:row.recommend,
+      dishName:row.dish_name || '',
+      comment:row.comment,
+      visitDate:row.visit_date,
+      timestamp:row.created_at,
+      images:row.review_images || [],
+      reactions:row.review_reactions || []
+    });
+  });
+}
+
+async function loadFavorites(){
+  const { data: rows, error } = await db
+    .from('favorites')
+    .select('restaurant_id')
+    .eq('user_id', currentUser.id);
+  if(error){ throw error; }
+  favoriteIds = new Set((rows||[]).map(r=>r.restaurant_id));
 }
 
 function escapeHtml(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
@@ -412,7 +507,8 @@ function render(){
     const cat = CATS[place.category] || CATS.snack;
     const revs = data.reviews[place.id]||[];
     const likes = likeCount(revs);
-    const tier = getTier(likes);
+    const tier = getTierFromReviews(revs);
+    const avg = avgRating(revs);
     const b = document.createElement('div');
     let cls = 'building';
     if(place.id===newlyCreatedId) cls += ' new';
@@ -420,7 +516,7 @@ function render(){
     b.className = cls;
     b.style.left = place.x + '%';
     b.style.top = place.y + '%';
-    b.innerHTML = `${buildingSVG(tier, cat)}<div class="bname">${escapeHtml(place.name)} (👍${likes}/${revs.length})</div>`;
+    b.innerHTML = `${buildingSVG(tier, cat)}<div class="bname">${escapeHtml(place.name)} (★${avg ? avg.toFixed(1) : '-'} · 👍${likes})</div>`;
     b.addEventListener('click',(e)=>{
       e.stopPropagation();
       if(moveModeId) return;
@@ -451,6 +547,78 @@ function renderLegend(){
   });
 }
 
+function todayISO(){
+  return new Date().toISOString().slice(0,10);
+}
+function readRating(container, name){
+  return Number(container.querySelector(`input[name="${name}"]:checked`)?.value || 0);
+}
+function ratingInputs(name, selected){
+  selected = selected || 4;
+  return `<div class="radio-row">
+    ${[1,2,3,4,5].map(n=>`<label><input type="radio" name="${name}" value="${n}" ${n===selected?'checked':''}> ${n}★</label>`).join('')}
+  </div>`;
+}
+async function uploadReviewImages(reviewId, files){
+  const selected = Array.from(files || []).slice(0, 3);
+  const inserted = [];
+  for(let i=0; i<selected.length; i++){
+    const file = selected[i];
+    const cleanName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-');
+    const path = `${currentUser.id}/${reviewId}/${Date.now()}-${i}-${cleanName}`;
+    const { error: uploadError } = await db.storage.from('review-images').upload(path, file, { upsert:false });
+    if(uploadError) throw uploadError;
+    const { data: urlData } = db.storage.from('review-images').getPublicUrl(path);
+    const { data: imageRow, error: imageError } = await db
+      .from('review_images')
+      .insert({
+        review_id: reviewId,
+        storage_path: path,
+        public_url: urlData.publicUrl,
+        alt_text: cleanName,
+        sort_order: i
+      })
+      .select()
+      .single();
+    if(imageError) throw imageError;
+    inserted.push(imageRow);
+  }
+  return inserted;
+}
+function reactionNames(review, type){
+  return (review.reactions||[])
+    .filter(r=>r.reaction_type===type)
+    .map(r=>r.profiles?.display_name || '匿名吃货');
+}
+function myReaction(review){
+  if(!currentUser) return null;
+  return (review.reactions||[]).find(r=>r.user_id===currentUser.id)?.reaction_type || null;
+}
+function renderReviewCard(review){
+  const likeNames = reactionNames(review, 'like');
+  const disagreeNames = reactionNames(review, 'disagree');
+  const mine = myReaction(review);
+  return `
+    <div class="review ${review.recommend?'':'no'}" data-review-id="${review.id}">
+      <div class="review-head">
+        <span>${escapeHtml(review.reviewer)}</span>
+        <span class="rec ${review.recommend?'yes':'no'}">${review.recommend?'👍 推荐':'👎 一般'}</span>
+      </div>
+      <div style="font-weight:700;color:#a5762e;">${ratingStars(review.rating)} <span style="color:#8a7860;font-size:12px;">${review.visitDate || ''}</span></div>
+      ${review.dishName ? `<div style="font-size:13px;color:#7a6a52;">吃了：${escapeHtml(review.dishName)}</div>` : ''}
+      <div>${escapeHtml(review.comment || '（没留话，只留了个态度）')}</div>
+      ${(review.images||[]).length ? `<div class="review-images">${review.images.map(img=>`<img src="${escapeHtml(img.public_url)}" alt="${escapeHtml(img.alt_text || '评价图片')}">`).join('')}</div>` : ''}
+      <div class="reaction-row">
+        <button class="reaction-btn ${mine==='like'?'active':''}" data-reaction="like">赞同 ${likeNames.length}</button>
+        <button class="reaction-btn ${mine==='disagree'?'active':''}" data-reaction="disagree">不认同 ${disagreeNames.length}</button>
+      </div>
+      <div class="reaction-names">
+        ${likeNames.length ? `赞同：${escapeHtml(likeNames.join('、'))}` : ''}
+        ${disagreeNames.length ? `${likeNames.length ? '<br>' : ''}不认同：${escapeHtml(disagreeNames.join('、'))}` : ''}
+      </div>
+    </div>`;
+}
+
 function openAddForm(xPct, yPct){
   const overlay = buildOverlay(`
     <h2>建造新店铺</h2>
@@ -459,8 +627,21 @@ function openAddForm(xPct, yPct){
     <input type="text" id="f-name" placeholder="例如：老王家的葱油拌面">
     <label>类型</label>
     <select id="f-cat">${Object.entries(CATS).map(([k,c])=>`<option value="${k}">${c.icon} ${c.label}</option>`).join('')}</select>
+    <label>人均价格，可选</label>
+    <input type="number" id="f-price" min="0" step="1" placeholder="例如：18">
+    <label>店铺补充说明，可选</label>
+    <textarea id="f-desc" placeholder="比如：适合午饭、排队快、离4栋近"></textarea>
+    <hr class="divider">
+    <label>星级评分</label>
+    ${ratingInputs('f-rating', 4)}
+    <label>就餐日期</label>
+    <input type="date" id="f-visit-date" value="${todayISO()}">
+    <label>吃了什么，可选</label>
+    <input type="text" id="f-dish" placeholder="例如：葱油拌面 + 荷包蛋">
     <label>说两句(推荐什么 / 踩雷提醒)</label>
     <textarea id="f-note" placeholder="比如：牛肉面绝了，分量大"></textarea>
+    <label>上传图片，可选，最多3张</label>
+    <input type="file" id="f-images" accept="image/*" multiple>
     <label>推荐吗?</label>
     <div class="radio-row">
       <label><input type="radio" name="f-rec" value="yes" checked> 👍 推荐</label>
@@ -475,19 +656,56 @@ function openAddForm(xPct, yPct){
   overlay.querySelector('#f-submit').addEventListener('click', async ()=>{
     const name = overlay.querySelector('#f-name').value.trim();
     if(!name){ alert('给店起个名字吧~'); return; }
+    const rating = readRating(overlay, 'f-rating');
+    if(!rating){ alert('选个星级吧~'); return; }
+    const visitDate = overlay.querySelector('#f-visit-date').value;
+    if(!visitDate){ alert('就餐日期是必填的哦'); return; }
     const note = overlay.querySelector('#f-note').value.trim();
     if(!note){ alert('说两句再建造吧，光秃秃的地基可不行~'); return; }
     const category = overlay.querySelector('#f-cat').value;
-    const user = myName;
+    const priceRaw = overlay.querySelector('#f-price').value;
+    const avgPrice = priceRaw ? Number(priceRaw) : null;
+    const description = overlay.querySelector('#f-desc').value.trim() || null;
+    const dishName = overlay.querySelector('#f-dish').value.trim() || null;
     const rec = overlay.querySelector('input[name="f-rec"]:checked').value === 'yes';
-    const id = 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
-    data.places.push({ id, name, category, x:xPct, y:yPct, addedBy:user, addedAt:Date.now() });
-    data.reviews[id] = [{ reviewer:user, comment:note, recommend:rec, timestamp:Date.now() }];
-    await saveData();
-    newlyCreatedId = id;
-    render();
-    closeOverlay();
-    showToast(`🏗️ "${name}" 建成啦！`);
+    try{
+      const { data: restaurant, error: restaurantError } = await db
+        .from('restaurants')
+        .insert({
+          name,
+          category_id: category,
+          x: xPct,
+          y: yPct,
+          avg_price: avgPrice,
+          description,
+          created_by: currentUser.id
+        })
+        .select()
+        .single();
+      if(restaurantError) throw restaurantError;
+      const { data: review, error: reviewError } = await db
+        .from('reviews')
+        .insert({
+          restaurant_id: restaurant.id,
+          user_id: currentUser.id,
+          rating,
+          recommend: rec,
+          dish_name: dishName,
+          comment: note,
+          visit_date: visitDate
+        })
+        .select()
+        .single();
+      if(reviewError) throw reviewError;
+      await uploadReviewImages(review.id, overlay.querySelector('#f-images').files);
+      await loadData();
+      newlyCreatedId = restaurant.id;
+      render();
+      closeOverlay();
+      showToast(`🏗️ "${name}" 建成啦！`);
+    }catch(err){
+      alert(`保存失败：${err.message || err}`);
+    }
   });
 }
 
@@ -497,33 +715,46 @@ function openDetail(placeId){
   const cat = CATS[place.category] || CATS.snack;
   const reviews = data.reviews[placeId] || [];
   const likes = likeCount(reviews);
-  const tier = getTier(likes);
+  const avg = avgRating(reviews);
+  const tier = getTierFromReviews(reviews);
   const nextThresh = {1:2,2:5,3:10,4:null}[tier];
-  const isAdmin = myName === ADMIN_NAME;
+  const canAdmin = isAdmin();
+  const isFav = favoriteIds.has(placeId);
   const overlay = buildOverlay(`
     <h2>${escapeHtml(place.name)}</h2>
     <span class="cat-badge" style="background:${cat.wallDark}">${cat.icon} ${cat.label}</span>
-    <div class="tier-line">🏠 目前是「${TIER_NAMES[tier]}」（👍${likes}个好评 / 共${reviews.length}条点评）${nextThresh?`，再${nextThresh-likes}个好评就能升级！`:'，已经是最高等级啦！'}</div>
+    <div class="tier-line">🏠 目前是「${TIER_NAMES[tier]}」（★${avg ? avg.toFixed(1) : '-'} / 👍${likes}个推荐 / 共${reviews.length}条点评）${nextThresh?`，再${Math.max(0,nextThresh-likes)}个推荐且评分达标就能升级！`:'，已经是最高等级啦！'}</div>
     <div class="tier-line" style="margin-top:-8px;">👷 由 <b>${escapeHtml(place.addedBy||'匿名吃货')}</b> 建造</div>
-    ${isAdmin ? `
+    ${place.avgPrice ? `<div class="tier-line" style="margin-top:-8px;">💰 人均约 ${Number(place.avgPrice).toFixed(0)} 元</div>` : ''}
+    ${place.description ? `<div class="tier-line" style="margin-top:-8px;">${escapeHtml(place.description)}</div>` : ''}
+    <button class="btn favorite-btn" id="favoriteBtn">${isFav ? '已收藏 · 点击取消' : '收藏这家店'}</button>
+    ${canAdmin ? `
     <div style="margin-top:12px;padding:12px;background:#f0e6cc;border:2px dashed #a5762e;border-radius:8px;">
       <div style="font-size:12px;font-weight:700;color:#a5762e;margin-bottom:8px;">🛡️ 管理员编辑（仅兜兜可见）</div>
       <label style="margin-top:0;">店名</label>
       <input type="text" id="admin-name" value="${escapeHtml(place.name)}">
       <label>分类</label>
       <select id="admin-cat">${Object.entries(CATS).map(([k,c])=>`<option value="${k}" ${k===place.category?'selected':''}>${c.icon} ${c.label}</option>`).join('')}</select>
+      <label>人均价格，可选</label>
+      <input type="number" id="admin-price" min="0" step="1" value="${place.avgPrice ?? ''}">
+      <label>店铺补充说明，可选</label>
+      <textarea id="admin-desc">${escapeHtml(place.description || '')}</textarea>
       <button class="btn" id="admin-save" style="margin-top:10px;">保存修改</button>
     </div>` : ''}
     <div class="reviews-list" id="reviews-list">
-      ${reviews.length ? reviews.map(r=>`
-        <div class="review ${r.recommend?'':'no'}">
-          <div class="review-head"><span>${escapeHtml(r.reviewer)}</span><span class="rec ${r.recommend?'yes':'no'}">${r.recommend?'👍 推荐':'👎 一般'}</span></div>
-          <div>${escapeHtml(r.comment || '（没留话，只留了个态度）')}</div>
-        </div>`).join('') : '<div class="empty-hint">还没有点评</div>'}
+      ${reviews.length ? reviews.map(renderReviewCard).join('') : '<div class="empty-hint">还没有点评</div>'}
     </div>
     <hr class="divider">
+    <label>星级评分</label>
+    ${ratingInputs('r-rating', 4)}
+    <label>就餐日期</label>
+    <input type="date" id="r-visit-date" value="${todayISO()}">
+    <label>吃了什么，可选</label>
+    <input type="text" id="r-dish" placeholder="例如：招牌牛肉饭">
     <label>说两句 (以「${escapeHtml(myName)}」发表)</label>
     <textarea id="r-note" placeholder="味道怎么样？值得再去吗？"></textarea>
+    <label>上传图片，可选，最多3张</label>
+    <input type="file" id="r-images" accept="image/*" multiple>
     <label>推荐吗?</label>
     <div class="radio-row">
       <label><input type="radio" name="r-rec" value="yes" checked> 👍 推荐</label>
@@ -534,40 +765,118 @@ function openDetail(placeId){
       <button class="btn secondary" id="r-cancel">关闭</button>
     </div>
     <div style="margin-top:14px;">
-      <button id="r-move" style="background:none;border:none;color:#a5762e;font-size:12px;cursor:pointer;text-decoration:underline;">移动位置</button>
+      ${canAdmin ? '<button id="r-move" style="background:none;border:none;color:#a5762e;font-size:12px;cursor:pointer;text-decoration:underline;">移动位置</button>' : ''}
     </div>
   `);
-  if(isAdmin){
+  bindReviewActions(overlay, placeId);
+  overlay.querySelector('#favoriteBtn').addEventListener('click', async ()=>{
+    await toggleFavorite(placeId);
+    openDetail(placeId);
+  });
+  if(canAdmin){
     overlay.querySelector('#admin-save').addEventListener('click', async ()=>{
       const newName = overlay.querySelector('#admin-name').value.trim();
       const newCat = overlay.querySelector('#admin-cat').value;
+      const priceRaw = overlay.querySelector('#admin-price').value;
+      const avgPrice = priceRaw ? Number(priceRaw) : null;
+      const description = overlay.querySelector('#admin-desc').value.trim() || null;
       if(!newName){ alert('店名不能为空'); return; }
-      place.name = newName;
-      place.category = newCat;
-      await saveData();
-      render();
+      try{
+        const { error } = await db
+          .from('restaurants')
+          .update({ name:newName, category_id:newCat, avg_price:avgPrice, description, updated_at:new Date().toISOString() })
+          .eq('id', placeId);
+        if(error) throw error;
+        await loadData();
+        render();
+        closeOverlay();
+        showToast(`🛡️ 已更新「${newName}」的信息`);
+      }catch(err){
+        alert(`更新失败：${err.message || err}`);
+      }
+    });
+    overlay.querySelector('#r-move').addEventListener('click', ()=>{
       closeOverlay();
-      showToast(`🛡️ 已更新「${newName}」的信息`);
+      startMove(placeId);
     });
   }
-  overlay.querySelector('#r-move').addEventListener('click', ()=>{
-    closeOverlay();
-    startMove(placeId);
-  });
   overlay.querySelector('#r-cancel').addEventListener('click', closeOverlay);
   overlay.querySelector('#r-submit').addEventListener('click', async ()=>{
-    const user = myName;
+    const rating = readRating(overlay, 'r-rating');
+    if(!rating){ alert('选个星级吧~'); return; }
+    const visitDate = overlay.querySelector('#r-visit-date').value;
+    if(!visitDate){ alert('就餐日期是必填的哦'); return; }
     const note = overlay.querySelector('#r-note').value.trim();
+    if(!note){ alert('说两句再点评吧~'); return; }
+    const dishName = overlay.querySelector('#r-dish').value.trim() || null;
     const rec = overlay.querySelector('input[name="r-rec"]:checked').value === 'yes';
-    const oldTier = getTier(likeCount(data.reviews[placeId]));
-    if(!data.reviews[placeId]) data.reviews[placeId] = [];
-    data.reviews[placeId].push({ reviewer:user, comment:note, recommend:rec, timestamp:Date.now() });
-    const newTier = getTier(likeCount(data.reviews[placeId]));
-    await saveData();
-    render();
-    closeOverlay();
-    if(newTier>oldTier){ showToast(`🎉 "${place.name}" 升级成「${TIER_NAMES[newTier]}」啦！`); }
-    else { showToast('点评已收到～'); }
+    const oldTier = getTierFromReviews(data.reviews[placeId]);
+    try{
+      const { data: review, error } = await db
+        .from('reviews')
+        .insert({
+          restaurant_id: placeId,
+          user_id: currentUser.id,
+          rating,
+          recommend: rec,
+          dish_name: dishName,
+          comment: note,
+          visit_date: visitDate
+        })
+        .select()
+        .single();
+      if(error) throw error;
+      await uploadReviewImages(review.id, overlay.querySelector('#r-images').files);
+      await loadData();
+      const newTier = getTierFromReviews(data.reviews[placeId]);
+      render();
+      closeOverlay();
+      if(newTier>oldTier){ showToast(`🎉 "${place.name}" 升级成「${TIER_NAMES[newTier]}」啦！`); }
+      else { showToast('点评已收到～'); }
+    }catch(err){
+      alert(`点评失败：${err.message || err}`);
+    }
+  });
+}
+
+async function toggleFavorite(placeId){
+  if(favoriteIds.has(placeId)){
+    const { error } = await db.from('favorites').delete().eq('restaurant_id', placeId).eq('user_id', currentUser.id);
+    if(error){ alert(`取消收藏失败：${error.message}`); return; }
+    favoriteIds.delete(placeId);
+    showToast('已取消收藏');
+  }else{
+    const { error } = await db.from('favorites').insert({ restaurant_id:placeId, user_id:currentUser.id });
+    if(error){ alert(`收藏失败：${error.message}`); return; }
+    favoriteIds.add(placeId);
+    showToast('已收藏');
+  }
+}
+
+function bindReviewActions(overlay, placeId){
+  overlay.querySelectorAll('.reaction-btn').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const reviewEl = btn.closest('.review');
+      const reviewId = reviewEl.dataset.reviewId;
+      const type = btn.dataset.reaction;
+      const review = (data.reviews[placeId]||[]).find(r=>r.id===reviewId);
+      const mine = myReaction(review);
+      try{
+        if(mine === type){
+          const { error } = await db.from('review_reactions').delete().eq('review_id', reviewId).eq('user_id', currentUser.id);
+          if(error) throw error;
+        }else{
+          const { error } = await db
+            .from('review_reactions')
+            .upsert({ review_id:reviewId, user_id:currentUser.id, reaction_type:type }, { onConflict:'review_id,user_id' });
+          if(error) throw error;
+        }
+        await loadData();
+        openDetail(placeId);
+      }catch(err){
+        alert(`操作失败：${err.message || err}`);
+      }
+    });
   });
 }
 
@@ -607,10 +916,34 @@ function cancelMove(){
 }
 
 async function loadIdentity(){
-  try{
-    const res = await window.storage.get('my-name', false);
-    if(res && res.value) myName = res.value;
-  }catch(e){ /* not logged in yet */ }
+  const { data: { session }, error } = await db.auth.getSession();
+  if(error) throw error;
+  currentUser = session?.user || null;
+  if(!currentUser){
+    currentProfile = null;
+    myName = null;
+    return;
+  }
+  currentProfile = await ensureProfile(currentUser);
+  myName = currentProfile.display_name;
+}
+
+async function ensureProfile(user, preferredName){
+  const { data: existing, error: selectError } = await db
+    .from('profiles')
+    .select('*')
+    .eq('id', user.id)
+    .maybeSingle();
+  if(selectError) throw selectError;
+  if(existing) return existing;
+  const displayName = (preferredName || user.user_metadata?.display_name || user.email?.split('@')[0] || '新吃货').trim();
+  const { data: created, error: insertError } = await db
+    .from('profiles')
+    .insert({ id:user.id, display_name:displayName, role:'user' })
+    .select()
+    .single();
+  if(insertError) throw insertError;
+  return created;
 }
 
 function showLoginGate(){
@@ -621,41 +954,90 @@ function showLoginGate(){
     overlay.innerHTML = `
       <div class="card">
         <h2>👋 欢迎来到干饭根据地</h2>
-        <div style="font-size:13px;color:#8a7860;margin-bottom:10px;">第一次来，先告诉大家你是谁吧～以后打开就自动记得你了</div>
-        <label>你的姓名</label>
-        <input type="text" id="login-name" placeholder="怎么称呼你">
+        <div style="font-size:13px;color:#8a7860;margin-bottom:10px;">注册或登录后，就能建店、点评、收藏和上传图片啦</div>
+        <div class="radio-row">
+          <label><input type="radio" name="auth-mode" value="login" checked> 登录</label>
+          <label><input type="radio" name="auth-mode" value="signup"> 注册</label>
+        </div>
+        <div id="signup-name-wrap" style="display:none;">
+          <label>你的姓名</label>
+          <input type="text" id="auth-name" placeholder="例如：兜兜">
+        </div>
+        <label>邮箱</label>
+        <input type="email" id="auth-email" placeholder="you@example.com">
+        <label>密码</label>
+        <input type="password" id="auth-password" placeholder="输入密码">
         <button class="btn" id="login-submit" style="width:100%;text-align:center;margin-top:16px;">进入根据地</button>
+        <div class="empty-hint" id="auth-hint"></div>
       </div>`;
     document.body.appendChild(overlay);
-    const nameInput = overlay.querySelector('#login-name');
-    nameInput.focus();
+    const emailInput = overlay.querySelector('#auth-email');
+    const passwordInput = overlay.querySelector('#auth-password');
+    const nameInput = overlay.querySelector('#auth-name');
+    const hint = overlay.querySelector('#auth-hint');
+    const nameWrap = overlay.querySelector('#signup-name-wrap');
+    emailInput.focus();
+    overlay.querySelectorAll('input[name="auth-mode"]').forEach(r=>{
+      r.addEventListener('change', ()=>{
+        nameWrap.style.display = overlay.querySelector('input[name="auth-mode"]:checked').value === 'signup' ? 'block' : 'none';
+        hint.textContent = '';
+      });
+    });
     const submit = async ()=>{
-      const val = nameInput.value.trim();
-      if(!val){ alert('输个名字吧，不然大家都不知道是谁建的店～'); return; }
-      myName = val;
-      try{ await window.storage.set('my-name', myName, false); }
-      catch(e){ /* identity save failed, still let them in */ }
-      overlay.remove();
-      resolve();
+      const mode = overlay.querySelector('input[name="auth-mode"]:checked').value;
+      const email = emailInput.value.trim();
+      const password = passwordInput.value;
+      const displayName = nameInput.value.trim();
+      if(!email){ alert('邮箱要填哦'); return; }
+      if(!password){ alert('密码要填哦'); return; }
+      if(mode === 'signup' && !displayName){ alert('注册时要填一个姓名'); return; }
+      hint.textContent = '正在进入根据地…';
+      try{
+        if(mode === 'signup'){
+          const { data: signUpData, error } = await db.auth.signUp({
+            email,
+            password,
+            options:{ data:{ display_name:displayName } }
+          });
+          if(error) throw error;
+          if(!signUpData.session){
+            hint.textContent = '注册成功。请先到邮箱确认账号，再回来登录。';
+            return;
+          }
+          currentUser = signUpData.user;
+          currentProfile = await ensureProfile(currentUser, displayName);
+        }else{
+          const { data: signInData, error } = await db.auth.signInWithPassword({ email, password });
+          if(error) throw error;
+          currentUser = signInData.user;
+          currentProfile = await ensureProfile(currentUser);
+        }
+        myName = currentProfile.display_name;
+        overlay.remove();
+        resolve();
+      }catch(err){
+        hint.textContent = err.message || String(err);
+      }
     };
     overlay.querySelector('#login-submit').addEventListener('click', submit);
-    nameInput.addEventListener('keydown',(e)=>{ if(e.key==='Enter') submit(); });
+    [emailInput, passwordInput, nameInput].forEach(input=>input.addEventListener('keydown',(e)=>{ if(e.key==='Enter') submit(); }));
   });
 }
 
 function openMyFootprint(){
-  const built = data.places.filter(p=>p.addedBy===myName);
+  const built = data.places.filter(p=>p.createdBy===currentUser.id);
   const eaten = [];
+  const favorites = data.places.filter(p=>favoriteIds.has(p.id));
   Object.entries(data.reviews).forEach(([placeId, revs])=>{
     const place = data.places.find(p=>p.id===placeId);
     if(!place) return;
     revs.forEach(r=>{
-      if(r.reviewer===myName){ eaten.push({ place, review:r }); }
+      if(r.userId===currentUser.id){ eaten.push({ place, review:r }); }
     });
   });
   buildOverlay(`
     <h2>🧭 ${escapeHtml(myName)} 的足迹</h2>
-    <div class="tier-line">建造了 ${built.length} 家店 · 点评过 ${eaten.length} 次</div>
+    <div class="tier-line">建造了 ${built.length} 家店 · 点评过 ${eaten.length} 次 · 收藏了 ${favorites.length} 家店</div>
     <hr class="divider">
     <label>🏗️ 我建造的店</label>
     <div class="reviews-list">
@@ -669,8 +1051,16 @@ function openMyFootprint(){
       ${eaten.length ? eaten.map(e=>`
         <div class="review ${e.review.recommend?'':'no'}">
           <div class="review-head"><span>${escapeHtml(e.place.name)}</span><span class="rec ${e.review.recommend?'yes':'no'}">${e.review.recommend?'👍':'👎'}</span></div>
+          <div style="font-weight:700;color:#a5762e;">${ratingStars(e.review.rating)} <span style="color:#8a7860;font-size:12px;">${e.review.visitDate || ''}</span></div>
           <div>${escapeHtml(e.review.comment || '（没留话）')}</div>
         </div>`).join('') : '<div class="empty-hint">还没点评过，去尝尝鲜吧</div>'}
+    </div>
+    <label>⭐ 我收藏的店</label>
+    <div class="reviews-list">
+      ${favorites.length ? favorites.map(p=>{
+        const cat = CATS[p.category]||CATS.snack;
+        return `<div class="review">${cat.icon} ${escapeHtml(p.name)} <span style="color:#8a7860;font-size:12px;">(${cat.label})</span></div>`;
+      }).join('') : '<div class="empty-hint">还没收藏过店</div>'}
     </div>
     <button class="btn secondary" id="footprint-close">关闭</button>
   `).querySelector('#footprint-close').addEventListener('click', closeOverlay);
@@ -679,17 +1069,25 @@ function openMyFootprint(){
 async function init(){
   mapEl = document.getElementById('mapCanvas');
   legendEl = document.getElementById('legend');
-  await loadData();
-  await loadIdentity();
-  if(!myName){ await showLoginGate(); }
+  try{
+    await loadIdentity();
+    if(!myName){ await showLoginGate(); }
+    await loadData();
+  }catch(err){
+    alert(`加载失败：${err.message || err}`);
+  }
   const whoEl = document.getElementById('whoamiName');
-  if(whoEl) whoEl.textContent = myName;
+  if(whoEl) whoEl.textContent = `${myName}${isAdmin() ? '（管理员）' : ''}`;
   document.getElementById('switchUserLink').addEventListener('click', async (e)=>{
     e.preventDefault();
+    await db.auth.signOut();
+    currentUser = null;
+    currentProfile = null;
     myName = null;
-    try{ await window.storage.set('my-name', '', false); }catch(err){}
     await showLoginGate();
-    document.getElementById('whoamiName').textContent = myName;
+    await loadData();
+    render();
+    document.getElementById('whoamiName').textContent = `${myName}${isAdmin() ? '（管理员）' : ''}`;
   });
   document.getElementById('footprintFab').addEventListener('click',(e)=>{
     e.preventDefault();
@@ -707,9 +1105,15 @@ async function init(){
       const yPct = parseFloat(((e.clientY-rect.top)/rect.height*100).toFixed(1));
       const place = data.places.find(p=>p.id===moveModeId);
       if(place){
-        place.x = xPct; place.y = yPct;
-        await saveData();
-        showToast(`📍 "${place.name}" 已经挪到新位置啦`);
+        const { error } = await db
+          .from('restaurants')
+          .update({ x:xPct, y:yPct, updated_at:new Date().toISOString() })
+          .eq('id', place.id);
+        if(error){ alert(`移动失败：${error.message}`); }
+        else {
+          await loadData();
+          showToast(`📍 "${place.name}" 已经挪到新位置啦`);
+        }
       }
       cancelMove();
       return;
