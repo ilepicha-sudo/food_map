@@ -1120,7 +1120,6 @@ function bindMapPan(){
     startX = event.clientX;
     startPanX = panX;
     moved = false;
-    mapViewport.setPointerCapture?.(pointerId);
   });
   mapViewport.addEventListener('pointermove', (event)=>{
     if(event.pointerId !== pointerId) return;
@@ -1128,6 +1127,7 @@ function bindMapPan(){
     if(!moved && Math.abs(deltaX) < 6) return;
     moved = true;
     panMoved = true;
+    mapViewport.setPointerCapture?.(pointerId);
     panX = startPanX + deltaX;
     applyPan();
     event.preventDefault();
