@@ -445,6 +445,7 @@ async function loadRestaurantsAndReviews(){
     y:Number(row.y),
     avgPrice:row.avg_price,
     description:row.description,
+    status:row.status,
     createdBy:row.created_by,
     addedBy:row.profiles?.display_name || '匿名吃货',
     addedAt:row.created_at
@@ -1276,8 +1277,15 @@ function showLoginGate(){
   });
 }
 
-function openMyFootprint(){
-  const built = data.places.filter(p=>p.createdBy===currentUser.id);
+async function openMyFootprint(){
+  try{
+    await loadData();
+    render();
+  }catch(err){
+    alert(`足迹加载失败：${err.message || err}`);
+    return;
+  }
+  const built = data.places.filter(p=>p.status==='active' && p.createdBy===currentUser.id);
   const eaten = [];
   const favorites = data.places.filter(p=>favoriteIds.has(p.id));
   Object.entries(data.reviews).forEach(([placeId, revs])=>{
@@ -1342,9 +1350,9 @@ async function init(){
     render();
     document.getElementById('whoamiName').textContent = `${myName}${isAdmin() ? '（管理员）' : ''}`;
   });
-  document.getElementById('footprintFab').addEventListener('click',(e)=>{
+  document.getElementById('footprintFab').addEventListener('click',async (e)=>{
     e.preventDefault();
-    openMyFootprint();
+    await openMyFootprint();
   });
   mapEl.innerHTML = `
     <div class="hint-banner" id="hintBanner">点击空地，建造你吃过的店！</div>
