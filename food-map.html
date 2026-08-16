@@ -616,7 +616,7 @@ function render(){
     b.className = cls;
     b.style.left = place.x + '%';
     b.style.top = place.y + '%';
-    b.innerHTML = `${buildingSVG(tier, cat)}<div class="bname">${escapeHtml(place.name)} (★${avg ? avg.toFixed(1) : '-'} · 👍${likes})</div>`;
+    b.innerHTML = `${buildingSVG(tier, cat)}<div class="bname">${escapeHtml(place.name)} · 👍${likes}</div>`;
     b.addEventListener('click',(e)=>{
       e.stopPropagation();
       if(moveModeId) return;
