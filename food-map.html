@@ -213,6 +213,15 @@
   .review-head .rec.no{ background:var(--seal-red); }
   .review-images{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
   .review-images img{ width:72px; height:72px; object-fit:cover; border-radius:6px; border:2px solid #e5d8ba; }
+  .paste-zone{
+    margin-top:8px; border:2px dashed #d8c9a3; border-radius:8px; background:#fffef9;
+    padding:10px; color:#8a7860; font-size:13px; cursor:text; outline:none;
+  }
+  .paste-zone:focus{ border-color:#a5762e; box-shadow:0 0 0 3px rgba(224,176,74,0.18); }
+  .paste-preview{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .paste-preview img{ width:64px; height:64px; object-fit:cover; border-radius:6px; border:2px solid #e5d8ba; }
+  .paste-actions{ display:flex; align-items:center; gap:8px; margin-top:6px; color:#8a7860; font-size:12px; }
+  .link-btn{ background:none; border:none; color:#a5762e; cursor:pointer; padding:0; font-family:'Baloo 2',sans-serif; font-weight:700; text-decoration:underline; }
   .reaction-row{ display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
   .reaction-btn{ border:1px solid #d8c9a3; background:#fffaf0; color:#7a5a3a; border-radius:14px; padding:3px 10px; cursor:pointer; font-family:'Baloo 2',sans-serif; font-weight:700; font-size:12px; }
   .reaction-btn.active{ background:#3d2c1c; color:#fff5da; border-color:#3d2c1c; }
@@ -559,6 +568,65 @@ function ratingInputs(name, selected){
     ${[1,2,3,4,5].map(n=>`<label><input type="radio" name="${name}" value="${n}" ${n===selected?'checked':''}> ${n}★</label>`).join('')}
   </div>`;
 }
+function imageInputHtml(prefix){
+  return `
+    <input type="file" id="${prefix}-images" accept="image/*" multiple>
+    <div class="paste-zone" id="${prefix}-paste-zone" tabindex="0">点这里，然后按 Ctrl+V 粘贴截图或复制的图片</div>
+    <div class="paste-preview" id="${prefix}-paste-preview"></div>
+    <div class="paste-actions">
+      <span id="${prefix}-image-count">还没有粘贴图片</span>
+      <button type="button" class="link-btn" id="${prefix}-clear-pasted">清空粘贴图片</button>
+    </div>`;
+}
+function setupPasteImageInput(overlay, prefix){
+  const zone = overlay.querySelector(`#${prefix}-paste-zone`);
+  const preview = overlay.querySelector(`#${prefix}-paste-preview`);
+  const count = overlay.querySelector(`#${prefix}-image-count`);
+  const clear = overlay.querySelector(`#${prefix}-clear-pasted`);
+  const fileInput = overlay.querySelector(`#${prefix}-images`);
+  overlay.pastedImages = overlay.pastedImages || {};
+  overlay.pastedImages[prefix] = [];
+
+  const renderPasted = ()=>{
+    preview.innerHTML = overlay.pastedImages[prefix].map(file=>`<img src="${escapeHtml(file.previewUrl)}" alt="${escapeHtml(file.name)}">`).join('');
+    const chosenCount = fileInput.files?.length || 0;
+    const pastedCount = overlay.pastedImages[prefix].length;
+    count.textContent = `已选择 ${chosenCount} 张本地图片，已粘贴 ${pastedCount} 张图片，提交时最多上传3张`;
+  };
+
+  fileInput.addEventListener('change', renderPasted);
+  zone.addEventListener('click', ()=>zone.focus());
+  zone.addEventListener('paste', (e)=>{
+    const imageItems = Array.from(e.clipboardData?.items || []).filter(item=>item.type.startsWith('image/'));
+    if(!imageItems.length){
+      zone.textContent = '剪贴板里没有图片，可以先截图或复制图片后再粘贴';
+      return;
+    }
+    e.preventDefault();
+    imageItems.forEach((item)=>{
+      const blob = item.getAsFile();
+      if(!blob) return;
+      const ext = blob.type.split('/')[1] || 'png';
+      const file = new File([blob], `pasted-${Date.now()}-${overlay.pastedImages[prefix].length}.${ext}`, { type: blob.type });
+      file.previewUrl = URL.createObjectURL(file);
+      overlay.pastedImages[prefix].push(file);
+    });
+    zone.textContent = '粘贴成功，还可以继续粘贴更多图片';
+    renderPasted();
+  });
+  clear.addEventListener('click', ()=>{
+    overlay.pastedImages[prefix].forEach(file=>URL.revokeObjectURL(file.previewUrl));
+    overlay.pastedImages[prefix] = [];
+    zone.textContent = '点这里，然后按 Ctrl+V 粘贴截图或复制的图片';
+    renderPasted();
+  });
+  renderPasted();
+}
+function collectReviewImages(overlay, prefix){
+  const selected = Array.from(overlay.querySelector(`#${prefix}-images`).files || []);
+  const pasted = overlay.pastedImages?.[prefix] || [];
+  return selected.concat(pasted).slice(0, 3);
+}
 async function uploadReviewImages(reviewId, files){
   const selected = Array.from(files || []).slice(0, 3);
   const inserted = [];
@@ -641,7 +709,7 @@ function openAddForm(xPct, yPct){
     <label>说两句(推荐什么 / 踩雷提醒)</label>
     <textarea id="f-note" placeholder="比如：牛肉面绝了，分量大"></textarea>
     <label>上传图片，可选，最多3张</label>
-    <input type="file" id="f-images" accept="image/*" multiple>
+    ${imageInputHtml('f')}
     <label>推荐吗?</label>
     <div class="radio-row">
       <label><input type="radio" name="f-rec" value="yes" checked> 👍 推荐</label>
@@ -652,6 +720,7 @@ function openAddForm(xPct, yPct){
       <button class="btn secondary" id="f-cancel">取消</button>
     </div>
   `);
+  setupPasteImageInput(overlay, 'f');
   overlay.querySelector('#f-cancel').addEventListener('click', closeOverlay);
   overlay.querySelector('#f-submit').addEventListener('click', async ()=>{
     const name = overlay.querySelector('#f-name').value.trim();
@@ -697,7 +766,7 @@ function openAddForm(xPct, yPct){
         .select()
         .single();
       if(reviewError) throw reviewError;
-      await uploadReviewImages(review.id, overlay.querySelector('#f-images').files);
+      await uploadReviewImages(review.id, collectReviewImages(overlay, 'f'));
       await loadData();
       newlyCreatedId = restaurant.id;
       render();
@@ -754,7 +823,7 @@ function openDetail(placeId){
     <label>说两句 (以「${escapeHtml(myName)}」发表)</label>
     <textarea id="r-note" placeholder="味道怎么样？值得再去吗？"></textarea>
     <label>上传图片，可选，最多3张</label>
-    <input type="file" id="r-images" accept="image/*" multiple>
+    ${imageInputHtml('r')}
     <label>推荐吗?</label>
     <div class="radio-row">
       <label><input type="radio" name="r-rec" value="yes" checked> 👍 推荐</label>
@@ -768,6 +837,7 @@ function openDetail(placeId){
       ${canAdmin ? '<button id="r-move" style="background:none;border:none;color:#a5762e;font-size:12px;cursor:pointer;text-decoration:underline;">移动位置</button>' : ''}
     </div>
   `);
+  setupPasteImageInput(overlay, 'r');
   bindReviewActions(overlay, placeId);
   overlay.querySelector('#favoriteBtn').addEventListener('click', async ()=>{
     await toggleFavorite(placeId);
@@ -826,7 +896,7 @@ function openDetail(placeId){
         .select()
         .single();
       if(error) throw error;
-      await uploadReviewImages(review.id, overlay.querySelector('#r-images').files);
+      await uploadReviewImages(review.id, collectReviewImages(overlay, 'r'));
       await loadData();
       const newTier = getTierFromReviews(data.reviews[placeId]);
       render();
@@ -890,7 +960,14 @@ function buildOverlay(innerHtml){
   overlay.querySelector('#closeX').addEventListener('click', closeOverlay);
   return overlay;
 }
-function closeOverlay(){ const o=document.getElementById('activeOverlay'); if(o) o.remove(); }
+function closeOverlay(){
+  const o=document.getElementById('activeOverlay');
+  if(!o) return;
+  Object.values(o.pastedImages || {}).flat().forEach(file=>{
+    if(file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+  });
+  o.remove();
+}
 
 function startMove(placeId){
   moveModeId = placeId;
