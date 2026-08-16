@@ -25,7 +25,8 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `id` | uuid | 用户 ID，对应 Supabase Auth 的 `auth.users.id` |
-| `display_name` | text | 用户显示名，唯一 |
+| `display_name` | text | 用户名/显示名，唯一 |
+| `auth_email` | text | 对应 Supabase Auth 邮箱，用于用户名登录，不在界面展示 |
 | `role` | text | `user` 或 `admin` |
 | `created_at` | timestamptz | 注册时间 |
 | `updated_at` | timestamptz | 更新时间 |
